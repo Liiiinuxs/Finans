@@ -1,7 +1,38 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import requests
 import time
+
+# Alpha Vantage API-konfiguration
+API_KEY = "7LXFP3G15C6HVTT1"
+
+# Funktion för att hämta dynamiska rekommenderade aktier
+def get_recommended_stocks(limit=10):
+    url = "https://www.alphavantage.co/query"
+    symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "NFLX", "ADBE", "INTC"]
+    recommended_stocks = []
+
+    for symbol in symbols:
+        params = {
+            "function": "GLOBAL_QUOTE",
+            "symbol": symbol,
+            "apikey": API_KEY
+        }
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            continue
+
+        data = response.json()
+        if "Global Quote" in data:
+            stock_info = data["Global Quote"]
+            recommended_stocks.append({
+                "Ticker": stock_info["01. symbol"],
+                "Price": float(stock_info["05. price"]),
+                "Change Percent": stock_info["10. change percent"]
+            })
+
+    return pd.DataFrame(recommended_stocks[:limit])
 
 # Funktion för att lägga till suffix om nödvändigt
 def apply_market_suffix(tickers, default_suffix=".ST"):
@@ -39,23 +70,19 @@ def fetch_stock_data(tickers):
             if hist_data is None or info is None:
                 continue
             
-            # Kontrollera om "Close" finns
             if "Close" in hist_data.columns:
                 price_data = hist_data["Close"]
             else:
                 st.warning(f"Ingen användbar kolumn hittades för {ticker}. Hoppar över.")
                 continue
 
-            # Beräkningar
             returns = price_data.pct_change()
             annual_volatility = returns.std() * (252 ** 0.5) * 100
             growth = ((price_data.iloc[-1] / price_data.iloc[0]) - 1) * 100
 
-            # Hämta nyckeltal
-            dividend_yield = info.get("dividendYield", 0) * 100  # Utdelningsandel i %
-            pe_ratio = info.get("forwardPE", None)  # P/E-tal
+            dividend_yield = info.get("dividendYield", 0) * 100
+            pe_ratio = info.get("forwardPE", None)
 
-            # Fyll i grundläggande information
             results.append({
                 "Ticker": ticker,
                 "Growth (%)": growth,
@@ -83,40 +110,6 @@ def calculate_scores(data):
 
     return data
 
-# Funktion för att analysera och ge detaljerade rekommendationer
-def analyze_and_recommend(data):
-    data = data.dropna()  # Ta bort rader med NaN-värden
-
-    avg_score = data["Total Score"].mean()
-    recommendations = []
-    for _, row in data.iterrows():
-        arguments = []
-        if row["Total Score"] > avg_score:
-            arguments.append(f"Total poäng ({row['Total Score']:.2f}) är högre än genomsnittet ({avg_score:.2f}).")
-        if row["Growth (%)"] > 0:
-            arguments.append(f"Hög tillväxt ({row['Growth (%)']:.2f}%).")
-        if row["Dividend Yield (%)"] > 0:
-            arguments.append(f"Utdelningsandel på {row['Dividend Yield (%)']:.2f}%.")
-        if row["P/E Ratio"] and row["P/E Ratio"] < 20:
-            arguments.append(f"Lågt P/E-tal ({row['P/E Ratio']:.2f}), vilket indikerar en rimlig värdering.")
-
-        recommendation_text = " ".join(arguments)
-        recommendations.append({
-            "Ticker": row["Ticker"],
-            "Recommendation": "Rekommenderas" if arguments else "Ej rekommenderad",
-            "Motivation": recommendation_text if arguments else "Inga starka skäl för investering."
-        })
-
-    return pd.DataFrame(recommendations)
-
-# Funktion för att ge förslag på liknande eller bättre aktier
-def suggest_similar(data, additional_data):
-    combined_data = pd.concat([data, additional_data])
-    best_score = combined_data["Total Score"].max()
-    suggestions = additional_data[additional_data["Total Score"] >= best_score * 0.7]
-    suggestions = suggestions.sort_values(by="Total Score", ascending=False)
-    return suggestions
-
 # Streamlit-applikation
 st.set_page_config(page_title="Linus Capital Insights", layout="wide")
 
@@ -126,7 +119,6 @@ st.title("💼 Linus Capital Insights")
 tickers_input = st.text_input("🔎 Ange aktiesymboler (kommaseparerade)", "AAPL, MSFT, KO, VOLV-B.ST, ERIC-B.ST")
 tickers = [ticker.strip() for ticker in tickers_input.split(",")]
 
-# Applicera marknadssuffix automatiskt
 tickers = apply_market_suffix(tickers)
 
 if st.button("Analysera"):
@@ -136,23 +128,9 @@ if st.button("Analysera"):
         st.subheader("Dina Aktier")
         st.dataframe(data)
 
-        st.subheader("📝 Rekommendationer")
-        recommendations = analyze_and_recommend(data)
-        st.dataframe(recommendations)
-
-        # Förslag på nya aktier
-        st.subheader("📈 Förslag på Nya Aktier")
-        additional_tickers = ["GOOGL", "META", "NVDA", "JNJ", "PG"]  # Fördefinierad lista
-        additional_data = fetch_stock_data(additional_tickers)
-        if not additional_data.empty:
-            additional_data = calculate_scores(additional_data)
-            suggestions = suggest_similar(data, additional_data)
-            st.dataframe(suggestions)
+        st.subheader("📈 Rekommenderade Aktier")
+        recommended_data = get_recommended_stocks()
+        if not recommended_data.empty:
+            st.dataframe(recommended_data)
         else:
-            st.warning("Kunde inte hämta data för fördefinierade aktier.")
-
-        # Visualisering
-        st.subheader("📊 Visualisering av Totalpoäng")
-        st.bar_chart(data.set_index("Ticker")["Total Score"])
-    else:
-        st.error("Ingen data tillgänglig för analys.")
+            st.warning("Kunde inte hämta rekommenderade aktier.")
